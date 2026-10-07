@@ -14,3 +14,6 @@ _build/
 
 # Local test trees
 test-patch/
+
+# Builds
+*.so

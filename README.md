@@ -389,6 +389,168 @@ When reporting a problem, include:
 * whether the archive is solid
 * relevant terminal output or logs
 
+## Recommendations for the `.so` Binary
+
+The `comicbookthumbnail-26.04.0-x86_64.so` file is a compiled KDE 6 plugin that extends the Comic Book thumbnailer from `kio-extras`, enabling thumbnail generation for ZIP, RAR, and 7z archives in addition to the usual comic book formats.
+
+### Compatibility
+
+The binary distributed in the **Releases** section was compiled specifically for:
+
+* Architecture: **x86_64**
+* KDE Frameworks 6
+* Qt 6
+* `kio-extras` **26.04.0**
+* KDE 6 thumbnailer plugin API
+* Tested environment: Soplos Linux Tyson
+* Dolphin 26.08.0
+
+Because this is a precompiled binary, compatibility depends on the versions of Qt, KDE Frameworks, and `kio-extras` installed on the system.
+
+It is recommended to use the `.so` binary only with a compatible KDE environment.
+
+### Installation
+
+The file must be installed as the `comicbookthumbnail.so` plugin in KDE's `thumbcreator` plugin directory.
+
+Before making any changes, it is strongly recommended to keep a backup of the original plugin:
+
+```bash
+sudo cp /usr/lib/x86_64-linux-gnu/qt6/plugins/kf6/thumbcreator/comicbookthumbnail.so \
+        /usr/lib/x86_64-linux-gnu/qt6/plugins/kf6/thumbcreator/comicbookthumbnail.so.backup
+```
+
+The new plugin can then be installed with:
+
+```bash
+sudo cp comicbookthumbnail-26.04.0-x86_64.so \
+        /usr/lib/x86_64-linux-gnu/qt6/plugins/kf6/thumbcreator/comicbookthumbnail.so
+```
+
+The installation path may vary between distributions. Before copying the file, verify the actual location of the existing plugin:
+
+```bash
+find /usr/lib /usr/lib64 -name comicbookthumbnail.so 2>/dev/null
+```
+
+### Important: Do Not Replace `thumbnail.so`
+
+This binary **must not be used to replace** the general KDE thumbnail loader:
+
+```text
+thumbnail.so
+```
+
+This project modifies only:
+
+```text
+comicbookthumbnail.so
+```
+
+The `thumbnail.so` plugin is responsible for loading the different KDE thumbnailer plugins. Replacing it with this file may prevent other thumbnail types from working correctly.
+
+### External Dependencies
+
+The plugin uses external tools for specific archive formats:
+
+| Format    | Backend                            |
+| --------- | ---------------------------------- |
+| ZIP / CBZ | `7z`                               |
+| 7z / CB7  | `7z`                               |
+| RAR / CBR | `unrar`, `unrar-nonfree`, or `rar` |
+| TAR / CBT | KDE KTar                           |
+
+Therefore, the `.so` binary does not include these external tools.
+
+Check that `7z` is available:
+
+```bash
+command -v 7z
+```
+
+For RAR support:
+
+```bash
+command -v unrar
+command -v unrar-nonfree
+command -v rar
+```
+
+The thumbnailer automatically selects the appropriate backend for each supported archive type.
+
+### After Installation
+
+After installing the plugin, restart Dolphin:
+
+```bash
+killall dolphin
+```
+
+Then open Dolphin again.
+
+If Dolphin continues displaying previously generated thumbnails, it may be necessary to clear the thumbnail cache:
+
+```bash
+rm -rf ~/.cache/thumbnails/*
+```
+
+Then navigate back to the directory containing the archives.
+
+### Verify the Binary
+
+Before installing a `.so` binary downloaded from a Release, verify its architecture:
+
+```bash
+file comicbookthumbnail-26.04.0-x86_64.so
+```
+
+The output should identify it as an **ELF 64-bit x86-64 shared object**.
+
+Its dynamic dependencies can also be checked with:
+
+```bash
+ldd comicbookthumbnail-26.04.0-x86_64.so
+```
+
+If required libraries are reported as `not found`, the binary is not compatible with the current installation or a required dependency is missing.
+
+### KDE Updates
+
+The distributed `.so` binary is associated with `kio-extras 26.04.0`.
+
+If KDE or `kio-extras` is upgraded to another version, the precompiled plugin may no longer be compatible. The distribution may also replace the modified plugin with the original package version during an upgrade.
+
+After a KDE or `kio-extras` update, it is recommended to:
+
+1. Check the installed `kio-extras` version.
+2. Verify that the plugin still works.
+3. If compatibility is lost, use a `.so` release matching the new `kio-extras` version, or rebuild the plugin using the patch included in this repository.
+
+### Recovery
+
+If the modified plugin causes problems, restore the original backup:
+
+```bash
+sudo cp /usr/lib/x86_64-linux-gnu/qt6/plugins/kf6/thumbcreator/comicbookthumbnail.so.backup \
+        /usr/lib/x86_64-linux-gnu/qt6/plugins/kf6/thumbcreator/comicbookthumbnail.so
+```
+
+If no backup is available, reinstall the `kio-extras` package provided by the distribution.
+
+### General Recommendation
+
+The `.so` binary included in the Release is intended as a **quick installation option for compatible x86_64 KDE systems**.
+
+For other distributions, different KDE/Qt versions, or different system architectures, it is recommended to apply the patch:
+
+```text
+patches/kio-extras-26.04.0-comicbook-thumbnailer.patch
+```
+
+and compile the plugin locally against the version of `kio-extras` installed on the target system.
+
+
+
 ## License and upstream code
 
 This project modifies source code originating from KDE.

@@ -1,0 +1,12 @@
+This project provides a patch for KDE kio-extras.
+
+The modified KDE source files retain their original KDE copyright
+and licensing terms. See the SPDX license identifiers and copyright
+notices in the corresponding KDE source files.
+
+This repository does not redistribute the complete kio-extras source
+tree. It distributes only the patch and documentation required to
+apply the modification to kio-extras 26.04.0.
+
+The patch itself is provided under the same licensing terms applicable
+to the corresponding modified KDE source files, where applicable.

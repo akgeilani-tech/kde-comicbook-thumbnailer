@@ -1,0 +1,16 @@
+# Build artifacts
+build/
+_build/
+
+# Temporary files
+*.tmp
+*.bak
+*.swp
+*~
+
+# Patch rejects
+*.rej
+*.orig
+
+# Local test trees
+test-patch/

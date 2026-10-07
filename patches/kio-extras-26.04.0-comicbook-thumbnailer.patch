@@ -1,0 +1,873 @@
+--- a/thumbnail/comiccreator.cpp
++++ b/thumbnail/comiccreator.cpp
+@@ -8,247 +8,715 @@
+  * Some code borrowed from Okular's comicbook generators,
+  * by Tobias Koenig <tokoe@kde.org>
+  *
+- * SPDX-License-Identifier: GPL-2.0-only OR GPL-3.0-only OR LicenseRef-KDE-Accepted-GPL
++ * SPDX-License-Identifier: GPL-2.0-only OR
++ * GPL-3.0-only OR LicenseRef-KDE-Accepted-GPL
+  */
+ 
+-// comiccreator.cpp
+-
+ #include "comiccreator.h"
+ #include "thumbnail-comic-logsettings.h"
+ 
+-#include <K7Zip>
+ #include <KConfigGroup>
+ #include <KIO/Global>
+ #include <KPluginFactory>
+ #include <KSharedConfig>
+ #include <KTar>
+-#include <KZip>
+-
+-#include <memory>
+ 
+-#include <QEventLoop>
+-#include <QFile>
++#include <QDir>
++#include <QIODevice>
+ #include <QMimeDatabase>
+ #include <QMimeType>
+ #include <QProcess>
++#include <QScopedPointer>
+ #include <QStandardPaths>
+ #include <QTemporaryDir>
+ 
+ K_PLUGIN_CLASS_WITH_JSON(ComicCreator, "comicbookthumbnail.json")
+ 
+ ComicCreator::ComicCreator(QObject *parent, const QVariantList &args)
+-    : KIO::ThumbnailCreator(parent, args)
++: KIO::ThumbnailCreator(parent, args)
+ {
+ }
+ 
+-KIO::ThumbnailResult ComicCreator::create(const KIO::ThumbnailRequest &request)
++KIO::ThumbnailResult ComicCreator::create(
++    const KIO::ThumbnailRequest &request)
+ {
+     const QString path = request.url().toLocalFile();
++
++    if (path.isEmpty()) {
++        return KIO::ThumbnailResult::fail();
++    }
++
+     QImage cover;
+ 
+-    // Detect mime type.
+-    QMimeDatabase db;
+-    const QMimeType mime = db.mimeTypeForName(request.mimeType());
+-
+-    if (mime.inherits("application/x-cbz") || mime.inherits("application/zip")) {
+-        // ZIP archive.
+-        cover = extractArchiveImage(path, ZIP);
+-    } else if (mime.inherits("application/x-cbt") || mime.inherits("application/x-gzip") || mime.inherits("application/x-tar")) {
+-        // TAR archive
+-        cover = extractArchiveImage(path, TAR);
+-    } else if (mime.inherits("application/x-cb7") || mime.inherits("application/x-7z-compressed")) {
++    const QMimeDatabase db;
++    const QMimeType mime =
++    db.mimeTypeForName(request.mimeType());
++
++    /*
++     * ZIP / CBZ
++     *
++     * ZIP files are intentionally handled through
++     * the system 7z executable instead of KZip.
++     */
++    if (mime.inherits(QStringLiteral("application/x-cbz")) ||
++        mime.inherits(QStringLiteral("application/zip"))) {
++
+         cover = extractArchiveImage(path, SEVENZIP);
+-    } else if (mime.inherits("application/x-cbr") || mime.inherits("application/x-rar")) {
+-        // RAR archive.
+-        cover = extractRARImage(path);
+-    }
++        }
+ 
+-    if (cover.isNull()) {
+-        qCDebug(KIO_THUMBNAIL_COMIC_LOG) << "Error creating the comic book thumbnail for" << path;
+-        return KIO::ThumbnailResult::fail();
+-    }
++        /*
++         * TAR / CBT / GZIP
++         */
++        else if (mime.inherits(QStringLiteral("application/x-cbt")) ||
++            mime.inherits(QStringLiteral("application/x-gzip")) ||
++            mime.inherits(QStringLiteral("application/x-tar"))) {
++
++            cover = extractArchiveImage(path, TAR);
++            }
++
++            /*
++             * 7z / CB7
++             */
++            else if (mime.inherits(QStringLiteral("application/x-cb7")) ||
++                mime.inherits(QStringLiteral("application/x-7z-compressed"))) {
++
++                cover = extractArchiveImage(path, SEVENZIP);
++                }
++
++                /*
++                 * RAR / CBR
++                 */
++                else if (mime.inherits(QStringLiteral("application/x-cbr")) ||
++                    mime.inherits(QStringLiteral("application/x-rar")) ||
++                    mime.inherits(QStringLiteral("application/vnd.rar"))) {
++
++                    cover = extractRARImage(path);
++                    }
++
++                    /*
++                     * Unsupported MIME type.
++                     */
++                    else {
++                        return KIO::ThumbnailResult::fail();
++                    }
++
++                    if (cover.isNull()) {
++                        return KIO::ThumbnailResult::fail();
++                    }
+ 
+-    return KIO::ThumbnailResult::pass(cover);
++                    return KIO::ThumbnailResult::pass(cover);
+ }
+ 
+ void ComicCreator::filterImages(QStringList &entries)
+ {
+-    /// Sort case-insensitive, then remove non-image entries.
++    /*
++     * Sort case-insensitive and remove non-image entries.
++     *
++     * QMap is intentionally used here so that the first image
++     * is deterministic and independent of archive enumeration order.
++     */
+     QMap<QString, QString> entryMap;
++
+     for (const QString &entry : qAsConst(entries)) {
+-        // Skip MacOS resource forks
+-        if (entry.startsWith(QLatin1String("__MACOSX"), Qt::CaseInsensitive) || entry.startsWith(QLatin1String(".DS_Store"), Qt::CaseInsensitive)) {
++
++        /*
++         * Ignore macOS metadata and resource forks.
++         */
++        if (entry.startsWith(
++            QLatin1String("__MACOSX"),
++                             Qt::CaseInsensitive) ||
++                             entry.startsWith(
++                                 QLatin1String(".DS_Store"),
++                                              Qt::CaseInsensitive)) {
++
+             continue;
+-        }
+-        if (entry.endsWith(QLatin1String(".avif"), Qt::CaseInsensitive) || entry.endsWith(QLatin1String(".bmp"), Qt::CaseInsensitive)
+-            || entry.endsWith(QLatin1String(".gif"), Qt::CaseInsensitive) || entry.endsWith(QLatin1String(".heif"), Qt::CaseInsensitive)
+-            || entry.endsWith(QLatin1String(".jpg"), Qt::CaseInsensitive) || entry.endsWith(QLatin1String(".jpeg"), Qt::CaseInsensitive)
+-            || entry.endsWith(QLatin1String(".jxl"), Qt::CaseInsensitive) || entry.endsWith(QLatin1String(".png"), Qt::CaseInsensitive)
+-            || entry.endsWith(QLatin1String(".webp"), Qt::CaseInsensitive)) {
+-            entryMap.insert(entry.toLower(), entry);
+-        }
++                                              }
++
++                                              const QString lowerEntry =
++                                              entry.toLower();
++
++                                              if (lowerEntry.endsWith(QStringLiteral(".avif")) ||
++                                                  lowerEntry.endsWith(QStringLiteral(".bmp")) ||
++                                                  lowerEntry.endsWith(QStringLiteral(".gif")) ||
++                                                  lowerEntry.endsWith(QStringLiteral(".heif")) ||
++                                                  lowerEntry.endsWith(QStringLiteral(".jpg")) ||
++                                                  lowerEntry.endsWith(QStringLiteral(".jpeg")) ||
++                                                  lowerEntry.endsWith(QStringLiteral(".jxl")) ||
++                                                  lowerEntry.endsWith(QStringLiteral(".png")) ||
++                                                  lowerEntry.endsWith(QStringLiteral(".webp"))) {
++
++                                                  entryMap.insert(
++                                                      lowerEntry,
++                                                      entry
++                                                  );
++                                                  }
+     }
++
+     entries = entryMap.values();
+ }
+ 
+-QImage ComicCreator::extractArchiveImage(const QString &path, const ComicCreator::Type type)
++QImage ComicCreator::extractSevenZipImage(
++    const QString &path,
++    const QString &imagePath)
++{
++    QProcess process;
++
++    process.setProgram(
++        QStringLiteral("/usr/bin/7z")
++    );
++
++    process.setArguments({
++        QStringLiteral("e"),
++                         QStringLiteral("-so"),
++                         path,
++                         imagePath
++    });
++
++    process.setProcessChannelMode(
++        QProcess::SeparateChannels
++    );
++
++    process.start();
++
++    if (!process.waitForStarted(5000)) {
++        return {};
++    }
++
++    if (!process.waitForFinished(-1)) { //was 15000
++        process.kill();
++        process.waitForFinished();
++        return {};
++    }
++
++    if (process.exitStatus() != QProcess::NormalExit ||
++        process.exitCode() != 0) {
++
++        return {};
++        }
++
++        const QByteArray imageData =
++        process.readAllStandardOutput();
++
++    if (imageData.isEmpty()) {
++        return {};
++    }
++
++    QImage image;
++
++    if (!image.loadFromData(imageData)) {
++        return {};
++    }
++
++    return image;
++}
++
++QImage ComicCreator::extractArchiveImage(
++    const QString &path,
++    const ComicCreator::Type type)
+ {
+-    /// Extracts the cover image out of the .cbz or .cbt file.
++    /*
++     * ZIP and 7z archives are handled through
++     * the system 7z executable.
++     *
++     * This intentionally avoids KZip/K7Zip for these
++     * formats so that both ZIP and 7z use the same
++     * extraction backend.
++     */
++    if (type == SEVENZIP) {
++
++        QProcess listProcess;
++
++        listProcess.setProgram(
++            QStringLiteral("/usr/bin/7z")
++        );
++
++        listProcess.setArguments({
++            QStringLiteral("l"),
++                                 QStringLiteral("-slt"),
++                                 path
++        });
++
++        listProcess.setProcessChannelMode(
++            QProcess::SeparateChannels
++        );
++
++        listProcess.start();
++
++        if (!listProcess.waitForStarted(5000)) {
++            return {};
++        }
++
++        if (!listProcess.waitForFinished(-1)) { //was 15000
++            listProcess.kill();
++            listProcess.waitForFinished();
++            return {};
++        }
++
++        if (listProcess.exitStatus() != QProcess::NormalExit ||
++            listProcess.exitCode() != 0) {
++
++            return {};
++            }
++
++            const QString output =
++            QString::fromLocal8Bit(
++                listProcess.readAllStandardOutput()
++            );
++
++        QStringList entries;
++
++        const QStringList lines =
++        output.split(
++            QLatin1Char('\n'),
++                     Qt::SkipEmptyParts
++        );
++
++        for (const QString &line : lines) {
++
++            if (line.startsWith(
++                QStringLiteral("Path = "))) {
++
++                entries.append(
++                    line.mid(
++                        QStringLiteral("Path = ").length()
++                    )
++                );
++                }
++        }
++
++        filterImages(entries);
++
++        if (entries.isEmpty()) {
++            return {};
++        }
++
++        return extractSevenZipImage(
++            path,
++            entries.first()
++        );
++    }
++
++    /*
++     * TAR continues to use KDE's KTar backend.
++     */
+     QScopedPointer<KArchive> cArchive;
+ 
+-    if (type == ZIP) {
+-        // Open the ZIP archive.
+-        cArchive.reset(new KZip(path));
+-    } else if (type == TAR) {
+-        // Open the TAR archive.
+-        cArchive.reset(new KTar(path));
+-    } else if (type == SEVENZIP) {
+-        // Open the 7z archive.
+-        cArchive.reset(new K7Zip(path));
+-    } else {
+-        // Reject all other types for this method.
+-        return QImage();
++    switch (type) {
++
++        case TAR:
++            cArchive.reset(
++                new KTar(path)
++            );
++            break;
++
++        default:
++            return {};
+     }
+ 
+-    // Can our archive be opened?
++    /*
++     * Open archive.
++     */
+     if (!cArchive->open(QIODevice::ReadOnly)) {
+-        return QImage();
++        return {};
+     }
+ 
+-    // Get the archive's directory.
+-    const KArchiveDirectory *cArchiveDir = nullptr;
+-    cArchiveDir = cArchive->directory();
++    /*
++     * Get archive directory.
++     */
++    const KArchiveDirectory *cArchiveDir =
++    cArchive->directory();
++
+     if (!cArchiveDir) {
+-        return QImage();
++        return {};
+     }
+ 
++    /*
++     * Enumerate all files.
++     */
+     QStringList entries;
+ 
+-    // Get and filter the entries from the archive.
+-    getArchiveFileList(entries, QString(), cArchiveDir);
++    getArchiveFileList(
++        entries,
++        QString(),
++                       cArchiveDir
++    );
++
++    /*
++     * Keep only supported image files.
++     */
+     filterImages(entries);
++
+     if (entries.isEmpty()) {
+-        return QImage();
++        return {};
+     }
+ 
+-#if KIO_VERSION >= QT_VERSION_CHECK(6, 23, 0)
+-    const KIO::filesize_t maxFileSize = KIO::ThumbnailRequest::maximumFileSize();
+-#else
+-    const KConfigGroup globalConfig(KSharedConfig::openConfig(), QStringLiteral("PreviewSettings"));
+-    const KIO::filesize_t maxFileSize = globalConfig.readEntry("MaximumSize", std::numeric_limits<KIO::filesize_t>::max());
+-#endif
++    /*
++     * Determine maximum allowed image size.
++     */
++    #if KIO_VERSION >= QT_VERSION_CHECK(6, 23, 0)
++
++    const KIO::filesize_t maxFileSize =
++    KIO::ThumbnailRequest::maximumFileSize();
++
++    #else
++
++    const KConfigGroup globalConfig(
++        KSharedConfig::openConfig(),
++                                    QStringLiteral("PreviewSettings")
++    );
++
++    const KIO::filesize_t maxFileSize =
++    globalConfig.readEntry(
++        "MaximumSize",
++        std::numeric_limits<KIO::filesize_t>::max()
++    );
+ 
+-    // Extract the cover file.
++    #endif
++
++    /*
++     * Try images in deterministic order.
++     */
+     for (const QString &entry : entries) {
+-        const KArchiveFile *coverFile = static_cast<const KArchiveFile *>(cArchiveDir->entry(entry));
+-        if (!coverFile || coverFile->size() < 0) {
++
++        const KArchiveEntry *archiveEntry =
++        cArchiveDir->entry(entry);
++
++        if (!archiveEntry ||
++            !archiveEntry->isFile()) {
++
++            continue;
++            }
++
++            const KArchiveFile *coverFile =
++            static_cast<const KArchiveFile *>(
++                archiveEntry
++            );
++
++        const qint64 fileSize =
++        coverFile->size();
++
++        if (fileSize < 0) {
++            continue;
++        }
++
++        const KIO::filesize_t coverFileSize =
++        static_cast<KIO::filesize_t>(
++            fileSize
++        );
++
++        if (coverFileSize > maxFileSize) {
+             continue;
+         }
+ 
+-        const KIO::filesize_t coverFileSize_t = static_cast<KIO::filesize_t>(coverFile->size());
+-        if (coverFileSize_t > maxFileSize) {
++        const QByteArray data =
++        coverFile->data();
++
++        if (data.isEmpty()) {
+             continue;
+         }
+ 
+-        return QImage::fromData(coverFile->data());
++        const QImage image =
++        QImage::fromData(data);
++
++        if (!image.isNull()) {
++            return image;
++        }
+     }
+ 
+     return {};
+ }
+ 
+-void ComicCreator::getArchiveFileList(QStringList &entries, const QString &prefix, const KArchiveDirectory *dir)
++void ComicCreator::getArchiveFileList(
++    QStringList &entries,
++    const QString &prefix,
++    const KArchiveDirectory *dir)
+ {
+-    /// Recursively list all files in the ZIP archive into 'entries'.
+-    const auto dirEntries = dir->entries();
++    if (!dir) {
++        return;
++    }
++
++    const QStringList dirEntries =
++    dir->entries();
++
+     for (const QString &entry : dirEntries) {
+-        const KArchiveEntry *e = dir->entry(entry);
+-        if (e->isDirectory()) {
+-            getArchiveFileList(entries, prefix + entry + '/', static_cast<const KArchiveDirectory *>(e));
+-        } else if (e->isFile()) {
+-            entries.append(prefix + entry);
++
++        const KArchiveEntry *archiveEntry =
++        dir->entry(entry);
++
++        if (!archiveEntry) {
++            continue;
++        }
++
++        const QString fullPath =
++        prefix + entry;
++
++        if (archiveEntry->isDirectory()) {
++
++            getArchiveFileList(
++                entries,
++                fullPath + QLatin1Char('/'),
++                               static_cast<const KArchiveDirectory *>(
++                                   archiveEntry
++                               )
++            );
++
++        } else if (archiveEntry->isFile()) {
++
++            entries.append(fullPath);
+         }
+     }
+ }
+ 
+-QImage ComicCreator::extractRARImage(const QString &path)
++QImage ComicCreator::extractRARImage(
++    const QString &path)
+ {
+-    /// Extracts the cover image out of the .cbr file.
++    /*
++     * Find a supported RAR executable once.
++     */
++    static const QString unrar =
++    unrarPath();
+ 
+-    // Check if unrar is available. Get its path in 'unrarPath'.
+-    static const QString unrar = unrarPath();
+     if (unrar.isEmpty()) {
+-        return QImage();
++        return {};
+     }
+ 
+-    // Get the files and filter the images out.
+-    QStringList entries = getRARFileList(path, unrar);
++    /*
++     * Obtain archive file list.
++     */
++    QStringList entries =
++    getRARFileList(
++        path,
++        unrar
++    );
++
++    /*
++     * Keep only image files.
++     */
+     filterImages(entries);
++
+     if (entries.isEmpty()) {
+-        return QImage();
++        return {};
++    }
++
++    const QString coverEntry =
++    entries.first();
++
++    /*
++     * Extract only the first image
++     * to a temporary directory.
++     */
++    QTemporaryDir temporaryDirectory;
++
++    if (!temporaryDirectory.isValid()) {
++        return {};
++    }
++
++    const bool processFinished =
++    runProcess(
++        unrar,
++        {
++            QStringLiteral("x"),
++               QStringLiteral("-n") + coverEntry,
++               path,
++               temporaryDirectory.path()
++        }
++    );
++
++    if (!processFinished) {
++        return {};
+     }
+ 
+-    // Extract the cover file alone. Use verbose paths.
+-    // unrar x -n<file> path/to/archive /path/to/temp
+-    QTemporaryDir cUnrarTempDir;
+-    runProcess(unrar, {"x", "-n" + entries[0], path, cUnrarTempDir.path()});
++    /*
++     * Load extracted image.
++     */
++    const QString extractedPath =
++    temporaryDirectory.path()
++    + QDir::separator()
++    + coverEntry;
+ 
+-    // Load cover file data into image.
+     QImage cover;
+-    cover.load(cUnrarTempDir.path() + QDir::separator() + entries[0]);
++
++    if (!cover.load(extractedPath)) {
++        return {};
++    }
+ 
+     return cover;
+ }
+ 
+-QStringList ComicCreator::getRARFileList(const QString &path, const QString &unrarPath)
++QStringList ComicCreator::getRARFileList(
++    const QString &path,
++    const QString &unrarPath)
+ {
+-    /// Get a verbose unrar listing so we can extract a single file later.
+-    // CMD: unrar vb /path/to/archive
++    /*
++     * Get a verbose RAR listing.
++     *
++     * Command:
++     *
++     *     unrar vb archive.rar
++     */
+     QStringList entries;
+-    runProcess(unrarPath, {"vb", path});
+-    entries = QString::fromLocal8Bit(m_stdOut).split('\n', Qt::SkipEmptyParts);
+-    return entries;
++
++    if (!runProcess(
++        unrarPath,
++        {
++            QStringLiteral("vb"),
++                    path
++        })) {
++
++        return entries;
++        }
++
++        entries =
++        QString::fromLocal8Bit(
++            m_stdOut
++        ).split(
++            QLatin1Char('\n'),
++                Qt::SkipEmptyParts
++        );
++
++        return entries;
+ }
+ 
+ QString ComicCreator::unrarPath() const
+ {
+-    /// Check the standard paths to see if a suitable unrar is available.
+-    QString unrar = QStandardPaths::findExecutable("unrar");
++    /*
++     * Search for a supported RAR executable.
++     *
++     * Priority:
++     *
++     * 1. unrar
++     * 2. unrar-nonfree
++     * 3. rar
++     */
++    QString unrar =
++    QStandardPaths::findExecutable(
++        QStringLiteral("unrar")
++    );
++
+     if (unrar.isEmpty()) {
+-        unrar = QStandardPaths::findExecutable("unrar-nonfree");
++
++        unrar =
++        QStandardPaths::findExecutable(
++            QStringLiteral("unrar-nonfree")
++        );
+     }
++
+     if (unrar.isEmpty()) {
+-        unrar = QStandardPaths::findExecutable("rar");
++
++        unrar =
++        QStandardPaths::findExecutable(
++            QStringLiteral("rar")
++        );
+     }
+-    if (!unrar.isEmpty()) {
+-        QProcess proc;
+-        proc.start(unrar, {"-version"});
+-        proc.waitForFinished(-1);
+-        const QStringList lines = QString::fromLocal8Bit(proc.readAllStandardOutput()).split('\n', Qt::SkipEmptyParts);
+-        if (!lines.isEmpty()) {
+-            if (lines.first().startsWith(QLatin1String("RAR ")) || lines.first().startsWith(QLatin1String("UNRAR "))) {
+-                return unrar;
+-            }
++
++    if (unrar.isEmpty()) {
++
++        qCWarning(
++            KIO_THUMBNAIL_COMIC_LOG
++        )
++        << "A suitable version of unrar is not available.";
++
++        return {};
++    }
++
++    /*
++     * Verify that the executable is actually
++     * a compatible RAR/UNRAR implementation.
++     */
++    QProcess process;
++
++    process.start(
++        unrar,
++        {
++            QStringLiteral("-version")
+         }
++    );
++
++    if (!process.waitForFinished(-1)) {
++
++        qCWarning(
++            KIO_THUMBNAIL_COMIC_LOG
++        )
++        << "Unable to execute RAR program:"
++        << unrar;
++
++        return {};
+     }
+-    qCWarning(KIO_THUMBNAIL_COMIC_LOG) << "A suitable version of unrar is not available.";
+-    return QString();
++
++    const QStringList lines =
++    QString::fromLocal8Bit(
++        process.readAllStandardOutput()
++    ).split(
++        QLatin1Char('\n'),
++            Qt::SkipEmptyParts
++    );
++
++    if (!lines.isEmpty()) {
++
++        const QString firstLine =
++        lines.first();
++
++        if (firstLine.startsWith(
++            QStringLiteral("RAR ")) ||
++            firstLine.startsWith(
++                QStringLiteral("UNRAR "))) {
++
++            return unrar;
++                }
++    }
++
++    qCWarning(
++        KIO_THUMBNAIL_COMIC_LOG
++    )
++    << "The executable is not a suitable "
++    "RAR/UNRAR implementation:"
++    << unrar;
++
++    return {};
+ }
+ 
+-int ComicCreator::runProcess(const QString &processPath, const QStringList &args)
++int ComicCreator::runProcess(
++    const QString &processPath,
++    const QStringList &args)
+ {
+-    /// Run a process and store stdout data in a buffer.
+-
++    /*
++     * Execute external RAR program
++     * and retain stdout.
++     */
+     QProcess process;
+-    process.setProcessChannelMode(QProcess::SeparateChannels);
++
++    process.setProcessChannelMode(
++        QProcess::SeparateChannels
++    );
+ 
+     process.setProgram(processPath);
+     process.setArguments(args);
+-    process.start(QIODevice::ReadWrite | QIODevice::Unbuffered);
+ 
+-    auto ret = process.waitForFinished(-1);
+-    m_stdOut = process.readAllStandardOutput();
++    process.start(
++        QIODevice::ReadWrite |
++        QIODevice::Unbuffered
++    );
++
++    if (!process.waitForStarted()) {
++
++        m_stdOut.clear();
++
++        return false;
++    }
++
++    const bool finished =
++    process.waitForFinished(-1);
++
++    m_stdOut =
++    process.readAllStandardOutput();
++
++    if (!finished) {
++        return false;
++    }
+ 
+-    return ret;
++    return process.exitStatus() ==
++    QProcess::NormalExit &&
++    process.exitCode() == 0;
+ }
+ 
+ #include "comiccreator.moc"
+--- a/thumbnail/comiccreator.h
++++ b/thumbnail/comiccreator.h
+@@ -49,6 +49,10 @@
+     QString unrarPath() const;
+     QStringList getRARFileList(const QString &path, const QString &unrarPath);
+ 
++    // For "7z" type files.
++    // Uses the system 7z executable.
++    QImage extractSevenZipImage(const QString &path, const QString &imagePath);
++
+ private:
+     QByteArray m_stdOut;
+ };
+--- a/thumbnail/comicbookthumbnail.json
++++ b/thumbnail/comicbookthumbnail.json
+@@ -8,7 +8,10 @@
+             "application/vnd.comicbook+zip",
+             "application/vnd.comicbook-rar",
+             "application/vnd.comicbook+tar",
+-            "application/x-cb7"
++            "application/x-cb7",
++            "application/zip",
++            "application/vnd.rar",
++            "application/x-7z-compressed"
+         ],
+         "Name": "Comic Books",
+         "Name[ar]": "الكتب الهزليّة",
